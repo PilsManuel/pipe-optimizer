@@ -572,28 +572,8 @@ tr:last-child td {
     padding: 0;
   }
 
-  h1, .subtitle, .steps, .nav-buttons, .print-btn {
-    display: none !important;
-  }
-
-  /* Hide DemandStep form and table */
-  .result-section ~ *,
-  .result-section ~ .nav-buttons {
-    display: none !important;
-  }
-
-  /* Target everything before .result-section — hide forms/demand tables */
-  #root > *:not(:has(.result-section)) {
-    display: none !important;
-  }
-
-  /* But show the wrapper that contains .result-section */
-  #root > *:has(.result-section) {
-    display: block !important;
-  }
-
-  /* Also hide the DemandStep parts inside the same step container */
-  #root > *:has(.result-section) > *:not(.result-section):not(.result-section *) {
+  /* Hide everything, then show only the result section */
+  #root > * {
     display: none !important;
   }
 
