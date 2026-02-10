@@ -1,4 +1,4 @@
-import { useState, Fragment } from 'react'
+import { useState, useMemo, Fragment } from 'react'
 import type { FormEvent } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -24,6 +24,15 @@ interface Pipe {
 }
 
 type CutPlan = Record<string, Pipe[]>
+
+interface AggregatedDemand {
+  key: string
+  project: string
+  materialId: string
+  lengthMm: number
+  count: number
+  ids: string[]
+}
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -116,9 +125,31 @@ function getProjectColorMap(demands: Demand[]): Map<string, string> {
 function formatMm(mm: number): string {
   if (mm >= 1000) {
     const m = mm / 1000
-    return Number.isInteger(m) ? `${m} m` : `${m.toFixed(1)} m`
+    return `${parseFloat(m.toFixed(3))} m`
   }
   return `${mm} mm`
+}
+
+function aggregateDemands(demands: Demand[]): AggregatedDemand[] {
+  const map = new Map<string, AggregatedDemand>()
+  for (const d of demands) {
+    const key = `${d.materialId}|${d.project}|${d.lengthMm}`
+    const existing = map.get(key)
+    if (existing) {
+      existing.count++
+      existing.ids.push(d.id)
+    } else {
+      map.set(key, {
+        key,
+        project: d.project,
+        materialId: d.materialId,
+        lengthMm: d.lengthMm,
+        count: 1,
+        ids: [d.id],
+      })
+    }
+  }
+  return [...map.values()]
 }
 
 // ── MaterialStep ───────────────────────────────────────────────────
@@ -216,16 +247,14 @@ function DemandStep({
   materials,
   demands,
   onAdd,
-  onDelete,
+  onDeleteGroup,
   onClearAll,
-  onOptimize,
 }: {
   materials: Material[]
   demands: Demand[]
   onAdd: (d: Demand) => void
-  onDelete: (id: string) => void
+  onDeleteGroup: (ids: string[]) => void
   onClearAll: () => void
-  onOptimize: () => void
 }) {
   const [project, setProject] = useState('')
   const [materialId, setMaterialId] = useState(materials[0]?.id ?? '')
@@ -248,11 +277,14 @@ function DemandStep({
   }
 
   const materialMap = new Map(materials.map(m => [m.id, m]))
-  const grouped = new Map<string, Demand[]>()
-  for (const d of demands) {
-    const list = grouped.get(d.materialId) ?? []
-    list.push(d)
-    grouped.set(d.materialId, list)
+  const aggregated = aggregateDemands(demands)
+
+  // Group aggregated by material
+  const groupedByMat = new Map<string, AggregatedDemand[]>()
+  for (const agg of aggregated) {
+    const list = groupedByMat.get(agg.materialId) ?? []
+    list.push(agg)
+    groupedByMat.set(agg.materialId, list)
   }
 
   return (
@@ -318,28 +350,30 @@ function DemandStep({
               <tr>
                 <th>Projekt</th>
                 <th>L&auml;nge</th>
+                <th>Anzahl</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
-              {[...grouped.entries()].map(([matId, items]) => {
+              {[...groupedByMat.entries()].map(([matId, items]) => {
                 const mat = materialMap.get(matId)
                 return (
                   <Fragment key={matId}>
                     <tr className="group-header">
-                      <td colSpan={3}>{mat?.name ?? matId}</td>
+                      <td colSpan={4}>{mat?.name ?? matId}</td>
                     </tr>
-                    {items.map(d => {
-                      const tooLong = mat ? d.lengthMm > mat.stockLengthMm - FIXED_WASTE : false
+                    {items.map(agg => {
+                      const tooLong = mat ? agg.lengthMm > mat.stockLengthMm - FIXED_WASTE : false
                       return (
-                        <tr key={d.id}>
-                          <td>{d.project}</td>
+                        <tr key={agg.key}>
+                          <td>{agg.project}</td>
                           <td>
-                            {formatMm(d.lengthMm)}
+                            {formatMm(agg.lengthMm)}
                             {tooLong && <span className="too-long"> — zu lang!</span>}
                           </td>
+                          <td>{agg.count}&times;</td>
                           <td>
-                            <button className="danger" onClick={() => onDelete(d.id)}>
+                            <button className="danger" onClick={() => onDeleteGroup(agg.ids)}>
                               &times;
                             </button>
                           </td>
@@ -353,11 +387,6 @@ function DemandStep({
           </table>
           <div className="action-row">
             <button className="danger" onClick={onClearAll}>Alle l&ouml;schen</button>
-            <div className="action-row-end">
-              <button className="primary" onClick={onOptimize}>
-                Optimieren
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -365,9 +394,9 @@ function DemandStep({
   )
 }
 
-// ── ResultStep ─────────────────────────────────────────────────────
+// ── ResultSection ──────────────────────────────────────────────────
 
-function ResultStep({
+function ResultSection({
   materials,
   demands,
   results,
@@ -400,17 +429,55 @@ function ResultStep({
   const efficiency = totalStockMm > 0 ? ((totalUsedMm / totalStockMm) * 100) : 0
 
   // Count too-long pieces
-  const tooLongPieces: Demand[] = []
-  for (const d of demands) {
-    const mat = materialMap.get(d.materialId)
-    if (mat && d.lengthMm > mat.stockLengthMm - FIXED_WASTE) {
-      tooLongPieces.push(d)
+  const tooLongAgg = aggregateDemands(
+    demands.filter(d => {
+      const mat = materialMap.get(d.materialId)
+      return mat && d.lengthMm > mat.stockLengthMm - FIXED_WASTE
+    })
+  )
+
+  // Build cut summary: group pipes by material + cut pattern
+  const summary: { material: string; pattern: string; count: number }[] = []
+  for (const [materialId, pipes] of Object.entries(results)) {
+    const mat = materialMap.get(materialId)
+    if (!mat || pipes.length === 0) continue
+    const patternCounts = new Map<string, number>()
+    for (const pipe of pipes) {
+      const key = pipe.cuts.map(c => formatMm(c.lengthMm)).join(' + ')
+      patternCounts.set(key, (patternCounts.get(key) ?? 0) + 1)
+    }
+    for (const [pattern, count] of patternCounts) {
+      summary.push({ material: mat.name, pattern, count })
     }
   }
 
   return (
     <div>
       <h2>Ergebnis</h2>
+
+      {summary.length > 0 && (
+        <div className="card">
+          <h3>Einkaufsliste</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Material</th>
+                <th>Zuschnitte</th>
+                <th>Anzahl</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.map((s, i) => (
+                <tr key={i}>
+                  <td>{s.material}</td>
+                  <td>{s.pattern}</td>
+                  <td>{s.count}&times;</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="card">
         <div className="stats-bar">
@@ -450,7 +517,7 @@ function ResultStep({
         </div>
       </div>
 
-      {tooLongPieces.length > 0 && (
+      {tooLongAgg.length > 0 && (
         <div className="card">
           <h3 className="too-long">Zu lange St&uuml;cke (nicht zugewiesen)</h3>
           <table>
@@ -459,18 +526,18 @@ function ResultStep({
                 <th>Projekt</th>
                 <th>Material</th>
                 <th>L&auml;nge</th>
-                <th>Max. nutzbar</th>
+                <th>Anzahl</th>
               </tr>
             </thead>
             <tbody>
-              {tooLongPieces.map(d => {
-                const mat = materialMap.get(d.materialId)
+              {tooLongAgg.map(agg => {
+                const mat = materialMap.get(agg.materialId)
                 return (
-                  <tr key={d.id}>
-                    <td>{d.project}</td>
+                  <tr key={agg.key}>
+                    <td>{agg.project}</td>
                     <td>{mat?.name}</td>
-                    <td>{formatMm(d.lengthMm)}</td>
-                    <td>{mat ? formatMm(mat.stockLengthMm - FIXED_WASTE) : '—'}</td>
+                    <td>{formatMm(agg.lengthMm)}</td>
+                    <td>{agg.count}&times;</td>
                   </tr>
                 )
               })}
@@ -504,7 +571,7 @@ function ResultStep({
                   project: cut.project,
                 })
                 if (cutIdx < pipe.cuts.length - 1) {
-                  segments.push({ type: 'kerf', mm: KERF, label: '' })
+                  segments.push({ type: 'kerf', mm: KERF, label: `${KERF}` })
                 }
               })
 
@@ -558,13 +625,17 @@ function ResultStep({
 
 // ── App ────────────────────────────────────────────────────────────
 
-const STEP_LABELS = ['Material', 'Bedarf', 'Ergebnis']
+const STEP_LABELS = ['Material', 'Bedarf & Ergebnis']
 
 function App() {
-  const [step, setStep] = useState<1 | 2 | 3>(1)
+  const [step, setStep] = useState<1 | 2>(1)
   const [materials, setMaterials] = useState<Material[]>([])
   const [demands, setDemands] = useState<Demand[]>([])
-  const [results, setResults] = useState<CutPlan | null>(null)
+
+  const results = useMemo(() => {
+    if (demands.length === 0) return null
+    return optimize(materials, demands)
+  }, [materials, demands])
 
   function addMaterial(m: Material) {
     setMaterials(prev => [...prev, m])
@@ -573,37 +644,25 @@ function App() {
   function deleteMaterial(id: string) {
     setMaterials(prev => prev.filter(m => m.id !== id))
     setDemands(prev => prev.filter(d => d.materialId !== id))
-    setResults(null)
   }
 
   function addDemand(d: Demand) {
     setDemands(prev => [...prev, d])
-    setResults(null)
   }
 
-  function deleteDemand(id: string) {
-    setDemands(prev => prev.filter(d => d.id !== id))
-    setResults(null)
+  function deleteGroup(ids: string[]) {
+    const idSet = new Set(ids)
+    setDemands(prev => prev.filter(d => !idSet.has(d.id)))
   }
 
   function clearDemands() {
     setDemands([])
-    setResults(null)
   }
 
-  function runOptimize() {
-    const plan = optimize(materials, demands)
-    setResults(plan)
-    setStep(3)
-  }
-
-  function goToStep(s: 1 | 2 | 3) {
+  function goToStep(s: 1 | 2) {
     if (s === 2 && materials.length === 0) return
-    if (s === 3 && !results) return
     setStep(s)
   }
-
-  const maxReachedStep = results ? 3 : demands.length > 0 ? 2 : materials.length > 0 ? 2 : 1
 
   return (
     <>
@@ -612,10 +671,10 @@ function App() {
 
       <div className="steps">
         {STEP_LABELS.map((label, i) => {
-          const s = (i + 1) as 1 | 2 | 3
+          const s = (i + 1) as 1 | 2
           const isActive = step === s
           const isCompleted = !isActive && s < step
-          const canGo = s <= maxReachedStep
+          const canGo = s === 1 || materials.length > 0
           return (
             <button
               key={s}
@@ -649,26 +708,13 @@ function App() {
             materials={materials}
             demands={demands}
             onAdd={addDemand}
-            onDelete={deleteDemand}
+            onDeleteGroup={deleteGroup}
             onClearAll={clearDemands}
-            onOptimize={runOptimize}
           />
+          {results && (
+            <ResultSection materials={materials} demands={demands} results={results} />
+          )}
           <div className="nav-buttons">
-            <button onClick={() => setStep(1)}>← Material</button>
-            {demands.length > 0 && (
-              <button className="primary" onClick={runOptimize}>
-                Optimieren →
-              </button>
-            )}
-          </div>
-        </>
-      )}
-
-      {step === 3 && results && (
-        <>
-          <ResultStep materials={materials} demands={demands} results={results} />
-          <div className="nav-buttons">
-            <button onClick={() => setStep(2)}>← Bedarf anpassen</button>
             <button onClick={() => setStep(1)}>← Material</button>
           </div>
         </>
