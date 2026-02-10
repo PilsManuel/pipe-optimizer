@@ -577,7 +577,7 @@ tr:last-child td {
     display: none !important;
   }
 
-  .result-section {
+  #root > .result-section {
     display: block !important;
   }
 
