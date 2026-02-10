@@ -542,3 +542,97 @@ tr:last-child td {
   gap: 0.5rem;
   margin-top: 1rem;
 }
+
+/* Result header with print button */
+.result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.result-header h2 {
+  margin-bottom: 0;
+}
+
+.print-btn {
+  font-size: 0.75rem;
+  padding: 0.4rem 0.8rem;
+}
+
+/* Print styles */
+@media print {
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  #root {
+    max-width: 100%;
+    padding: 0;
+  }
+
+  h1, .subtitle, .steps, .nav-buttons, .print-btn {
+    display: none !important;
+  }
+
+  /* Hide DemandStep form and table */
+  .result-section ~ *,
+  .result-section ~ .nav-buttons {
+    display: none !important;
+  }
+
+  /* Target everything before .result-section — hide forms/demand tables */
+  #root > *:not(:has(.result-section)) {
+    display: none !important;
+  }
+
+  /* But show the wrapper that contains .result-section */
+  #root > *:has(.result-section) {
+    display: block !important;
+  }
+
+  /* Also hide the DemandStep parts inside the same step container */
+  #root > *:has(.result-section) > *:not(.result-section):not(.result-section *) {
+    display: none !important;
+  }
+
+  .result-section {
+    display: block !important;
+  }
+
+  .result-section::before {
+    content: "Rohr-Zuschnittoptimierung";
+    display: block;
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-bottom: 0.75rem;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid #ccc;
+    box-shadow: none;
+  }
+
+  .stat-value {
+    color: #000;
+  }
+
+  .stat-label, .pipe-label, h3 {
+    color: #555;
+  }
+
+  table, th, td {
+    border-color: #ccc;
+  }
+
+  .pipe-row {
+    break-inside: avoid;
+  }
+
+  .pipe-bar, .pipe-bar .segment, .pipe-tag, .legend-swatch, .legend-swatch.hatched {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

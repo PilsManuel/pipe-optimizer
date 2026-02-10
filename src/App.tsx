@@ -452,8 +452,13 @@ function ResultSection({
   }
 
   return (
-    <div>
-      <h2>Ergebnis</h2>
+    <div className="result-section">
+      <div className="result-header">
+        <h2>Ergebnis</h2>
+        <button className="print-btn" onClick={() => window.print()}>
+          Als PDF drucken
+        </button>
+      </div>
 
       {summary.length > 0 && (
         <div className="card">
